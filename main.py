@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Versión 0.5.3.10 - Debugging PROFUNDO render_latex_to_image_bytes
+# Versión 0.5.3.14 - Eliminado updater.idle() de la tarea de polling
 from fastapi import FastAPI, Request, Response, HTTPException, UploadFile, File
 import asyncio 
 import requests 
@@ -51,11 +51,11 @@ from telegram.constants import ParseMode
 load_dotenv()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s', level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("matplotlib").setLevel(logging.INFO) # CAMBIADO A INFO para ver más detalles de Matplotlib
+logging.getLogger("matplotlib").setLevel(logging.INFO) 
 logger = logging.getLogger(__name__)
 
 # --- Crear Instancia FastAPI ---
-app = FastAPI(title="Raphael Agent API & Telegram Bot", version="0.5.3.10")
+app = FastAPI(title="Raphael Agent API & Telegram Bot", version="0.5.3.14")
 
 # --- Variables de Entorno ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -63,6 +63,7 @@ MONGO_CONNECTION_STRING = os.getenv("COSMOS_MONGO_CONNECTION_STRING")
 DATABASE_NAME = os.getenv("COSMOS_DATABASE_NAME", "raphaeldb")
 COLLECTION_NAME = os.getenv("COSMOS_COLLECTION_NAME", "equations")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
 
 logger.info(f"GOOGLE_API_KEY loaded: {'Yes' if GOOGLE_API_KEY else 'NO'}")
 logger.info(f"COSMOS_MONGO_CONNECTION_STRING loaded: {'Yes' if MONGO_CONNECTION_STRING else 'NO'}")
@@ -74,8 +75,8 @@ gemini_model_multimodal = None
 if GOOGLE_API_KEY:
     try:
         genai.configure(api_key=GOOGLE_API_KEY)
-        gemini_model_multimodal = genai.GenerativeModel('gemini-1.5-flash-latest')
-        logger.info("Google AI SDK configurado y modelo 'gemini-1.5-flash-latest' cargado.")
+        gemini_model_multimodal = genai.GenerativeModel('gemini-2.0-flash')
+        logger.info("Google AI SDK configurado y modelo 'gemini-2.0-flash-latest' cargado.")
         genai_configured = True
     except Exception as e:
         logger.error(f"Error config Google AI SDK: {e}", exc_info=True)
@@ -104,10 +105,10 @@ else:
 
 # --- Lista Permitida de Categorías ---
 ALLOWED_CATEGORIES = [
-    "mecanica clasica", "mecanica cuantica", "algebra lineal", "calculo",
+    "mecánica clasica", "mecánica cuantica", "algebra lineal", "cálculo",
     "ecuaciones diferenciales parciales", "ecuaciones diferenciales ordinarias",
-    "estadistica y probabilidad", "termodinamica", "relatividad",
-    "series (taylor, fourier, laurent, etc...)", "genericas", "optica", "electromagnetismo"
+    "estadística y probabilidad", "termodinámica", "relatividad",
+    "series (taylor, fourier, laurent, etc...)", "genericas", "óptica", "electromagnetismo"
 ]
 
 # --- Modelos de Datos ---
@@ -119,6 +120,7 @@ class LLMAnalysisData(BaseModel):
     derivation: str | None = None
     uses: str | None = None
     vars: str | None = None
+    similars: str | None = None
 
 class EquationAnalysis(BaseModel):
     equation_id: str
@@ -129,6 +131,7 @@ class EquationAnalysis(BaseModel):
     derivation: str | None = None
     uses: str | None = None
     vars: str | None = None
+    similars: str | None = None
     llm_analysis_status: str
     database_status: str
 
@@ -167,13 +170,12 @@ async def extract_and_analyze_equation_from_image_with_gemini(image_bytes: bytes
         category_list_str = ", ".join([f'"{cat}"' for cat in ALLOWED_CATEGORIES])
         image_part_for_gemini = {"mime_type": image_mime_type, "data": image_bytes}
 
-        # ESTE ES TU PROMPT v0.5.3.7 (el que funcionó bien para la derivación)
         prompt_parts = [
             "Tarea: Extraer la ecuación matemática principal de la imagen proporcionada y luego analizarla detalladamente.",
             "Paso 1: Observa la imagen. Identifica la ecuación matemática más prominente o central. Extrae esta ecuación y preséntala en formato LaTeX.",
             "Paso 2: Usando ÚNICAMENTE el LaTeX que extrajiste en el Paso 1, analiza la ecuación.",
             f"""
-Devuelve tu análisis completo (incluyendo el LaTeX extraído) estrictamente en formato JSON. El JSON debe tener la siguiente estructura y campos:
+Devuelve tu análisis completo (incluyendo el LaTeX extraído) estrictamente en formato JSON y SIEMPRE EN ESPAÑOL. El JSON debe tener la siguiente estructura y campos:
 {{
   "latex_extracted_from_image": "El LaTeX que extrajiste de la imagen en el Paso 1. Asegúrate de que sea LaTeX válido y completo.",
   "name": "Un nombre común o descriptivo para la ecuación/fórmula extraída. Si no tiene uno específico, intenta inferir uno.",
@@ -181,11 +183,12 @@ Devuelve tu análisis completo (incluyendo el LaTeX extraído) estrictamente en 
   "description": "Una breve descripción de lo que representa la ecuación, su propósito principal o el principio físico/matemático que encapsula.",
   "derivation": "PROPORCIONA OBLIGATORIAMENTE UNA DERIVACIÓN MATEMÁTICA ANALÍTICA paso a paso de la ecuación dada, en formato LaTeX. \
 Prioridad 1: Presenta la derivación GENERAL completa o los pasos fundamentales de la misma. No te preocupes por la longitud o la complejidad percibida; asume que el usuario tiene el conocimiento para entenderla. Muestra todos los pasos matemáticos relevantes. \
-Prioridad 2 (SOLO si la derivación general es genuinamente intratable en este formato o es un resultado de un formalismo muy extenso): Presenta la derivación para un CASO PARTICULAR REPRESENTATIVO O UNA VERSIÓN SIMPLIFICADA de la ecuación. Detalla los pasos matemáticos para este caso. Por ejemplo, para la ecuación de energía del átomo de Hidrógeno, deriva el nivel n=1 o n=2 explícitamente desde la ecuación de Schrödinger radial simplificada, mostrando los pasos. \
+Prioridad 2 (SOLO si la derivación general es genuinamente intratable en este formato): Presenta la derivación para un CASO PARTICULAR REPRESENTATIVO O UNA VERSIÓN SIMPLIFICADA de la ecuación. Detalla los pasos matemáticos para este caso. Por ejemplo, para la ecuación de energía del átomo de Hidrógeno, deriva el nivel n=1 o n=2 explícitamente desde la ecuación de Schrödinger radial simplificada, mostrando los pasos. \
 Prioridad 3 (ÚLTIMO RECURSO, si es un postulado/definición): Indica 'Postulado Fundamental: [Explicación concisa de su origen o contexto]' o 'Definición Axiomática: [Explicación concisa]'. \
 BAJO NINGUNA CIRCUNSTANCIA respondas con frases como 'Derivación compleja omitida', 'requiere conocimiento profundo', 'no es posible presentarla aquí' o justificaciones sobre la dificultad. El objetivo es SIEMPRE mostrar un procedimiento analítico o el fundamento de la ecuación. Utiliza LaTeX válido y claro.",
   "uses": "Menciona algunos usos comunes, aplicaciones prácticas o áreas donde esta ecuación es frecuentemente empleada. Sé conciso.",
-  "vars": "Define cada una de las variables presentes en la ecuación LaTeX extraída. Formatea esto como una cadena de texto donde cada par variable-definición esté claramente separado (ej., 'E: Energía total, m: masa, c: velocidad de la luz')."
+  "vars": "Define cada una de las variables presentes en la ecuación LaTeX extraída. Formatea esto como una cadena de texto donde cada par variable-definición esté claramente separado (ej., 'E: Energía total, m: masa, c: velocidad de la luz').
+  "similars": "Enumera otras ecuaciones o fórmulas que sean similares o relacionadas con la ecuación extraída. Puedes incluir ecuaciones que sean variaciones, extensiones o aplicaciones de la ecuación original. Sé conciso."
 }}
 
 Consideraciones Importantes:
@@ -246,71 +249,36 @@ async def save_analysis_to_mongo(analysis_data: EquationAnalysis, normalized_lat
         return res.acknowledged
     except Exception as e: logger.error(f"Error guardando DB: {e}", exc_info=True); return False
 
-# --- Función para Renderizar LaTeX a Imagen (v0.5.3.10 con debugging) ---
+# --- Función para Renderizar LaTeX a Imagen ---
 def render_latex_to_image_bytes(latex_str: str | None, filename: str = "equation.png") -> io.BytesIO | None:
     if not latex_str or not latex_str.strip(): 
         logger.warning(f"Render LaTeX inválido/vacío: {filename}")
         return None
-    
-    # Tu lógica de limpieza de processed_latex_str y final_latex_for_render se mantiene
-    processed_latex_str = latex_str.strip()
-    processed_latex_str = re.sub(r'\s+', ' ', processed_latex_str) 
-
-    if processed_latex_str.startswith("$$") and processed_latex_str.endswith("$$"):
-        processed_latex_str = processed_latex_str[2:-2].strip()
-    if processed_latex_str.startswith("\\[") and processed_latex_str.endswith("\\]"):
-        processed_latex_str = processed_latex_str[2:-2].strip()
-    if processed_latex_str.startswith("$") and processed_latex_str.endswith("$") and len(processed_latex_str) > 1:
-        temp_str_no_outer_dollars = processed_latex_str[1:-1]
-        if '$' not in temp_str_no_outer_dollars:
-            processed_latex_str = temp_str_no_outer_dollars.strip()
-
-    if not (processed_latex_str.startswith('$') and processed_latex_str.endswith('$')) \
-       and not processed_latex_str.strip().startswith('\\['):
-        final_latex_for_render = f"${processed_latex_str}$"
-    else:
-        final_latex_for_render = processed_latex_str
-
-    logger.info(f"LaTeX FINAL que se pasará a Matplotlib para {filename}: '{final_latex_for_render}'")
-
+    txt = latex_str.strip()
+    if not (txt.startswith('$') and txt.endswith('$')) and not txt.startswith('\\['): 
+        txt = f"${txt}$"
     fig = None 
     try:
-        num_lines = final_latex_for_render.count('\n') + final_latex_for_render.count('\\\\') + 1
-        fig_height = max(2.0, num_lines * 0.8 + 0.5) 
+        num_lines = len(txt.splitlines())
+        fig_height = max(2.5, num_lines * 0.6 + 1.0) 
         fig_width = 10 
         
-        fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=250)
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=200)
         fig.patch.set_facecolor('white')
-        
-        # ----- MODIFICACIÓN AQUÍ -----
-        ax.text(0.5, 0.5, final_latex_for_render, # x=0.5 (centro horizontal del eje)
-                fontsize=20, 
-                ha='center', # Alineación horizontal: centro
-                va='center', # Alineación vertical: centro
-                wrap=True,
-               )
-        # ----- FIN DE LA MODIFICACIÓN -----
+        ax.text(0.5, 0.5, txt, fontsize=18, ha='center', va='center', wrap=True) # Centrado
         ax.axis('off')
-        plt.tight_layout(pad=0.5)
-
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=fig.dpi, pad_inches=0.1) 
+        fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.2) 
         buf.seek(0)
-        
-        if buf.getbuffer().nbytes < 500: 
-            logger.warning(f"Buffer de imagen para {filename} es muy pequeño ({buf.getbuffer().nbytes} bytes). Renderizado podría ser incorrecto. LaTeX fue: '{final_latex_for_render}'")
-        else:
-            logger.info(f"Renderizado LaTeX a PNG ok para {filename} (Buffer size: {buf.getbuffer().nbytes} bytes)")
-        
+        logger.info(f"Renderizado LaTeX a PNG ok: {filename}")
         return buf
     except Exception as e: 
-        logger.error(f"Error renderizando LaTeX '{final_latex_for_render[:70]}...' para {filename}: {e}", exc_info=True)
+        logger.error(f"Error renderizando LaTeX '{txt[:30]}...': {e}", exc_info=True)
         return None
     finally:
-        if fig: 
-            plt.close(fig)# --- Lógica Principal de Procesamiento ---
+        if fig: plt.close(fig)
 
-            
+# --- Lógica Principal de Procesamiento ---
 async def process_equation(image_bytes: bytes, image_mime_type: str, filename: str = "telegram_image") -> EquationAnalysis | None:
     llm_data = await extract_and_analyze_equation_from_image_with_gemini(image_bytes, image_mime_type)
     if not llm_data or not llm_data.latex_extracted_from_image:
@@ -378,7 +346,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 try:
                     img_buf.seek(0)
                     await context.bot.send_photo(chat_id=chat_id, photo=img_buf, caption="Ecuación (Renderizada)", reply_to_message_id=msg_edit.message_id)
-                    logger.info(f"Imagen renderizada para LaTeX: {res.latex[:30]}... enviada.") # Log confirmación
+                    logger.info(f"Imagen renderizada para LaTeX: {res.latex[:30]}... enviada.") 
                 except Exception as e: logger.error(f"Error enviando imagen renderizada: {e}", exc_info=True)
                 finally: 
                     if img_buf: img_buf.close()
@@ -411,58 +379,79 @@ if TELEGRAM_BOT_TOKEN:
         telegram_app = None 
 
 async def run_telegram_polling():
+    logger.info("Entrando a run_telegram_polling()...")
     if telegram_app and telegram_app.updater:
         try:
-            if not telegram_app.initialized: 
-                await telegram_app.initialize()
-            logger.info("Iniciando polling de Telegram (run_telegram_polling)...")
+            logger.info("Llamando a telegram_app.initialize() antes de start_polling...")
+            await telegram_app.initialize() # <--- LLAMADA EXPLÍCITA A INITIALIZE
+            logger.info("telegram_app.initialize() completado. Iniciando polling...")
+            
             await telegram_app.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-            logger.info("Polling de Telegram iniciado y corriendo.")
-            await telegram_app.updater.idle()
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("Polling de Telegram interrumpido (KeyboardInterrupt/SystemExit).")
+            logger.info("Polling de Telegram iniciado y corriendo (después de start_polling).")
+            
+            # En lugar de updater.idle(), que no existe, podemos simplemente mantener la tarea viva
+            # mientras el updater esté corriendo. La cancelación vendrá del lifespan.
+            while telegram_app.updater.running:
+                await asyncio.sleep(1) # Chequea cada segundo, o un valor mayor
+            logger.info("El bucle de polling (while updater.running) ha terminado.")
+
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            logger.info("Polling de Telegram interrumpido o cancelado en run_telegram_polling.")
         except Exception as e: 
-            logger.error(f"Error en la ejecución del polling de Telegram: {e}", exc_info=True)
+            logger.error(f"Error EXCEPCIONAL en la ejecución del polling de Telegram: {e}", exc_info=True)
         finally:
+            logger.info("Bloque finally de run_telegram_polling alcanzado.")
             if telegram_app and telegram_app.updater and telegram_app.updater.running:
-                logger.info("Deteniendo updater de polling de Telegram al finalizar run_telegram_polling.")
+                logger.info("Deteniendo updater de polling de Telegram (finally de run_telegram_polling).")
                 await telegram_app.updater.stop()
-            if telegram_app and telegram_app.initialized: # Solo si fue inicializada
-                logger.info("Ejecutando shutdown de la aplicación Telegram al finalizar run_telegram_polling.")
+            if telegram_app: 
+                logger.info("Ejecutando shutdown de la aplicación Telegram (finally de run_telegram_polling).")
                 await telegram_app.shutdown()
+            logger.info("Tarea de polling run_telegram_polling finalizada completamente.")
+    else:
+        logger.error("telegram_app o telegram_app.updater no están disponibles en run_telegram_polling.")
 
 
 from contextlib import asynccontextmanager
 @asynccontextmanager
-async def lifespan(app_lifespan: FastAPI): # Renombrar 'app' a 'app_lifespan' para evitar conflicto de nombres
+async def lifespan(app_lifespan: FastAPI):
     global polling_task
-    logger.info("FastAPI lifespan: Iniciando tareas de fondo (polling de Telegram)...")
+    logger.info("FastAPI lifespan STARTUP: Iniciando tareas de fondo...")
     if telegram_app and telegram_app.updater: 
-        # Crear y guardar la tarea para poder cancelarla después
         polling_task = asyncio.create_task(run_telegram_polling())
-        logger.info("Tarea de polling de Telegram creada.")
+        logger.info(f"Tarea de polling de Telegram creada. Estado inicial de la tarea: {polling_task}")
+        await asyncio.sleep(2) 
+        if polling_task.done():
+            try:
+                exc = polling_task.exception()
+                if exc:
+                     logger.error(f"La tarea de polling falló inmediatamente después de crearla: {exc}", exc_info=exc)
+            except asyncio.CancelledError:
+                 logger.info("La tarea de polling fue cancelada inmediatamente (raro).")
+            except asyncio.InvalidStateError:
+                 logger.info("La tarea de polling está en un estado inválido (probablemente cancelada y ya se obtuvo la excepción).")
+
     elif not telegram_app:
         logger.error("Aplicación Telegram no inicializada. No se puede iniciar polling en lifespan de FastAPI.")
     elif not telegram_app.updater:
         logger.error("Telegram updater no disponible. No se puede iniciar polling.")
     yield
-    logger.info("FastAPI lifespan: Deteniendo tareas de fondo (polling de Telegram)...")
+    logger.info("FastAPI lifespan SHUTDOWN: Deteniendo tareas de fondo...")
     if polling_task and not polling_task.done():
         logger.info("Cancelando tarea de polling de Telegram...")
         polling_task.cancel()
         try:
-            await polling_task # Esperar a que la tarea se cancele
+            await polling_task 
         except asyncio.CancelledError:
-            logger.info("Tarea de polling de Telegram cancelada exitosamente.")
+            logger.info("Tarea de polling de Telegram cancelada exitosamente durante el shutdown.")
         except Exception as e_task_shutdown:
             logger.error(f"Error esperando la cancelación de la tarea de polling: {e_task_shutdown}")
-    # La lógica de parada del updater y shutdown de la app PTB ahora está en el finally de run_telegram_polling
-    # Sin embargo, si el idle() no es interrumpido por un cancel(), puede que no llegue al finally.
-    # Por eso, es bueno tener también aquí una parada explícita si el task no se detuvo por sí mismo.
+    
     if telegram_app and telegram_app.updater and telegram_app.updater.running:
-        logger.info("Asegurando detención del polling en shutdown del lifespan.")
+        logger.warning("Updater de Telegram seguía corriendo durante el shutdown del lifespan. Intentando detener de nuevo.")
         await telegram_app.updater.stop()
-    if telegram_app and telegram_app.initialized:
+    if telegram_app: 
+        logger.warning("Aplicación PTB podría seguir activa durante el shutdown del lifespan. Intentando shutdown de nuevo.")
         await telegram_app.shutdown()
     logger.info("Lifespan de FastAPI finalizado.")
 
