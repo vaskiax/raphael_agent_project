@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Versión 0.7.0 - MCP Implementado y SyntaxError Corregido
+# Versión 0.7.3 - Logging de Dispatcher y revisión de handlers
 from fastapi import FastAPI, Request, Response, HTTPException, UploadFile, File
 import asyncio
 import os
@@ -46,12 +46,14 @@ load_dotenv()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s', level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("matplotlib").setLevel(logging.INFO)
+# Niveles de DEBUG para python-telegram-bot
 logging.getLogger("telegram.ext").setLevel(logging.DEBUG)
 logging.getLogger("telegram.bot").setLevel(logging.DEBUG)
 logging.getLogger("telegram.request").setLevel(logging.DEBUG)
+logging.getLogger("telegram.ext.dispatcher").setLevel(logging.DEBUG) # <--- AÑADIDO PARA DEBUG DEL DISPATCHER
 logger = logging.getLogger("main_raphael_core")
 
-app = FastAPI(title="Raphael Agent API & Telegram Bot", version="0.7.0")
+app = FastAPI(title="Raphael Agent API & Telegram Bot", version="0.7.3")
 
 MONGO_CONNECTION_STRING = os.getenv("COSMOS_MONGO_CONNECTION_STRING")
 DATABASE_NAME = os.getenv("COSMOS_DATABASE_NAME", "raphaeldb")
@@ -73,7 +75,9 @@ db_collection: pymongo.collection.Collection | None = None
 if MONGO_CONNECTION_STRING:
     try:
         db_client = pymongo.MongoClient(MONGO_CONNECTION_STRING, serverSelectionTimeoutMS=30000)
+        logger.info("Intentando ping a la base de datos...")
         db_client.admin.command('ping')
+        logger.info("Ping a la base de datos exitoso.")
         if not DATABASE_NAME or any(c in DATABASE_NAME for c in [' ','.','$','/','\\','\0']):
              raise InvalidName(f"Nombre DB inválido: '{DATABASE_NAME}'")
         if not COLLECTION_NAME or '$' in COLLECTION_NAME or '\0' in COLLECTION_NAME:
@@ -81,6 +85,10 @@ if MONGO_CONNECTION_STRING:
         db = db_client[DATABASE_NAME]
         db_collection = db[COLLECTION_NAME]
         logger.info(f"Conectado a MongoDB/CosmosDB. DB: '{DATABASE_NAME}', Colección: '{COLLECTION_NAME}'")
+    except pymongo.errors.ServerSelectionTimeoutError as e_timeout:
+        logger.error(f"TIMEOUT al conectar/hacer ping a MongoDB/CosmosDB: {e_timeout}", exc_info=False)
+        logger.error("Verifica tu cadena de conexión y las reglas de firewall de Cosmos DB (permite tu IP local para pruebas Docker).")
+        db_client = None; db_collection = None
     except Exception as e:
         logger.error(f"Error configuración/conexión MongoDB/CosmosDB: {e}", exc_info=True)
         db_client = None; db_collection = None
@@ -93,35 +101,25 @@ ALLOWED_CATEGORIES = [
     "estadística y probabilidad", "termodinámica", "relatividad",
     "series (taylor, fourier, laurent, etc...)", "genericas", "óptica", "electromagnetismo"
 ]
-
-class LLMAnalysisData(BaseModel): # Lo que esperamos de la Azure Function
+class LLMAnalysisData(BaseModel):
     latex_extracted_from_image: str | None = None; name: str | None = None; category: str | None = None
     description: str | None = None; derivation: str | None = None; uses: str | None = None
     vars: str | None = None; similars: str | None = None
-
-class EquationAnalysis(BaseModel): # Para la DB y respuesta final
+class EquationAnalysis(BaseModel):
     equation_id: str; latex: str; name: str | None = None; category: str | None = None
     description: str | None = None; derivation: str | None = None; uses: str | None = None
     vars: str | None = None; similars: str | None = None; llm_analysis_status: str
     database_status: str; normalized_latex_key: str | None = None
 
-# --- DEFINICIÓN DEL TASK CONTEXT PARA MCP ---
 class TaskContext(BaseModel):
-    chat_id: int
-    user_id: int
-    message_id: int | None = None
-    processing_message_id: int | None = None
-    image_bytes: bytes | None = None
-    image_mime_type: str | None = None
-    image_filename: str | None = None
+    chat_id: int; user_id: int; message_id: int | None = None
+    processing_message_id: int | None = None; image_bytes: bytes | None = None
+    image_mime_type: str | None = None; image_filename: str | None = None
     llm_analysis_data: LLMAnalysisData | None = None
     equation_analysis_db: EquationAnalysis | None = None
-    normalized_latex_key: str | None = None
-    found_in_db: bool = False
+    normalized_latex_key: str | None = None; found_in_db: bool = False
     error_message: str | None = None
-    
-    class Config:
-        arbitrary_types_allowed = True
+    class Config: arbitrary_types_allowed = True
 
 def normalize_latex(latex_str: str) -> str | None:
     if not latex_str: return None
@@ -133,7 +131,6 @@ def normalize_latex(latex_str: str) -> str | None:
         try: sympy_expr = parse_latex(normalized); normalized_sympy = sympy_latex(sympy_expr, mode='inline', mul_symbol='dot'); return normalized_sympy.strip()
         except Exception: return normalized
     return normalized
-
 async def find_equation_by_normalized_latex(normalized_latex_key: str) -> dict | None:
     if db_collection is None or not normalized_latex_key: return None
     try: return db_collection.find_one({"normalized_latex_key": normalized_latex_key})
@@ -159,11 +156,13 @@ async def call_rapheye_vision_azure_function(image_bytes: bytes, image_mime_type
     except httpx.RequestError as e_req: 
         logger.error(f"Error red/solicitud llamando Azure Function: {type(e_req).__name__} - {e_req}")
         return None
-    except json.JSONDecodeError as e_json: # <-- BLOQUE CORREGIDO
+    except json.JSONDecodeError as e_json:
         logger.error(f"Error al decodificar JSON de Azure Function: {e_json}")
         response_text_for_debug = "No disponible"
-        if response_obj_for_debug and hasattr(response_obj_for_debug, 'text'): # Usar la variable correcta
+        if response_obj_for_debug and hasattr(response_obj_for_debug, 'text'): 
             response_text_for_debug = response_obj_for_debug.text[:500]
+        else:
+            logger.debug("response_obj_for_debug no disponible o no tiene 'text' para el debug del JSON.")
         logger.debug(f"Respuesta cruda (si disponible) que causó error JSON: {response_text_for_debug}")
         return None
     except Exception as e_general: 
@@ -171,7 +170,7 @@ async def call_rapheye_vision_azure_function(image_bytes: bytes, image_mime_type
         return None
 
 async def save_analysis_to_mongo(analysis_data: EquationAnalysis, normalized_latex_key: str) -> bool:
-    if db_collection is None: logger.warning("DB no configurada."); return False
+    if db_collection is None: logger.warning("DB no configurada, no se guardará el análisis."); return False
     try:
         doc_to_save = analysis_data.model_dump() if hasattr(analysis_data, 'model_dump') else analysis_data.dict()
         doc_to_save['_id'] = analysis_data.equation_id; doc_to_save['normalized_latex_key'] = normalized_latex_key
@@ -194,7 +193,6 @@ def render_latex_to_image_bytes(latex_str: str | None, filename: str = "equation
     finally:
         if fig: plt.close(fig)
 
-# --- ORQUESTADOR DE PROCESAMIENTO DE IMAGEN (MCP) ---
 async def orchestrate_image_processing(task_ctx: TaskContext) -> TaskContext:
     logger.info(f"Contexto MCP - Iniciando orquestación para Chat ID {task_ctx.chat_id}")
     if not (task_ctx.image_bytes and task_ctx.image_mime_type):
@@ -202,50 +200,37 @@ async def orchestrate_image_processing(task_ctx: TaskContext) -> TaskContext:
         logger.error(f"Contexto MCP - {task_ctx.error_message}")
         task_ctx.equation_analysis_db = EquationAnalysis(equation_id=str(uuid.uuid4()), latex="", llm_analysis_status=task_ctx.error_message, database_status="N/A")
         return task_ctx
-
     task_ctx.llm_analysis_data = await call_rapheye_vision_azure_function(task_ctx.image_bytes, task_ctx.image_mime_type)
-
     if not task_ctx.llm_analysis_data or not task_ctx.llm_analysis_data.latex_extracted_from_image:
         task_ctx.error_message = "Fallo al obtener análisis de Azure Function o no se extrajo LaTeX."
         logger.error(f"Contexto MCP - {task_ctx.error_message}")
         task_ctx.equation_analysis_db = EquationAnalysis(equation_id=str(uuid.uuid4()), latex="", llm_analysis_status=task_ctx.error_message, database_status="N/A - Analysis Failed")
         return task_ctx
-    
     extracted_latex = task_ctx.llm_analysis_data.latex_extracted_from_image
     task_ctx.normalized_latex_key = normalize_latex(extracted_latex) or extracted_latex
     logger.info(f"Contexto MCP - LaTeX: {extracted_latex}, Clave Normalizada: {task_ctx.normalized_latex_key}")
-
     if db_collection is not None and task_ctx.normalized_latex_key:
         existing_doc_dict = await find_equation_by_normalized_latex(task_ctx.normalized_latex_key)
         if existing_doc_dict:
             try:
                 logger.info(f"Contexto MCP - Ecuación encontrada en DB: {task_ctx.normalized_latex_key}")
-                data_for_model = {**existing_doc_dict}
-                data_for_model['latex'] = data_for_model.get('latex_extracted_from_image', data_for_model.get('latex'))
-                data_for_model['database_status'] = "Retrieved from DB"
-                data_for_model['llm_analysis_status'] = data_for_model.get('llm_analysis_status', 'Retrieved')
+                data_for_model = {**existing_doc_dict}; data_for_model['latex'] = data_for_model.get('latex_extracted_from_image', data_for_model.get('latex'))
+                data_for_model['database_status'] = "Retrieved from DB"; data_for_model['llm_analysis_status'] = data_for_model.get('llm_analysis_status', 'Retrieved')
                 if 'equation_id' not in data_for_model and '_id' in data_for_model: data_for_model['equation_id'] = str(data_for_model['_id'])
-                model_fields = EquationAnalysis.model_fields.keys()
-                cleaned_data_for_model = {k: v for k, v in data_for_model.items() if k in model_fields}
-                task_ctx.equation_analysis_db = EquationAnalysis(**cleaned_data_for_model)
-                task_ctx.found_in_db = True
-                return task_ctx
+                model_fields = EquationAnalysis.model_fields.keys(); cleaned_data_for_model = {k: v for k, v in data_for_model.items() if k in model_fields}
+                task_ctx.equation_analysis_db = EquationAnalysis(**cleaned_data_for_model); task_ctx.found_in_db = True; return task_ctx
             except Exception as e: logger.error(f"Contexto MCP - Error procesando doc DB: {e}. Re-analizando.", exc_info=True)
-
     logger.info("Contexto MCP - Creando nuevo análisis.")
     task_ctx.equation_analysis_db = EquationAnalysis(
         equation_id=str(uuid.uuid4()), latex=extracted_latex, name=task_ctx.llm_analysis_data.name, category=task_ctx.llm_analysis_data.category,
         description=task_ctx.llm_analysis_data.description, derivation=task_ctx.llm_analysis_data.derivation, uses=task_ctx.llm_analysis_data.uses,
         vars=task_ctx.llm_analysis_data.vars, similars=task_ctx.llm_analysis_data.similars,
         llm_analysis_status="Success (via Azure Function)", database_status="Save Attempt Pending", normalized_latex_key=task_ctx.normalized_latex_key)
-    
     if db_collection is not None:
         if await save_analysis_to_mongo(task_ctx.equation_analysis_db, task_ctx.normalized_latex_key):
-            task_ctx.equation_analysis_db.database_status = "Saved Successfully (New Entry)"
-            logger.info(f"Contexto MCP - Análisis guardado en DB: {task_ctx.normalized_latex_key}")
+            task_ctx.equation_analysis_db.database_status = "Saved Successfully (New Entry)"; logger.info(f"Contexto MCP - Análisis guardado en DB: {task_ctx.normalized_latex_key}")
         else:
-            task_ctx.equation_analysis_db.database_status = "Save Failed"
-            logger.warning(f"Contexto MCP - Fallo al guardar análisis en DB: {task_ctx.normalized_latex_key}")
+            task_ctx.equation_analysis_db.database_status = "Save Failed"; logger.warning(f"Contexto MCP - Fallo al guardar análisis en DB: {task_ctx.normalized_latex_key}")
     elif db_collection is None: task_ctx.equation_analysis_db.database_status = "Skipped (DB Unavailable)"
     return task_ctx
 
@@ -258,46 +243,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: await update.message.reply_html("Envíame foto de ecuación matemática. <b>Consejos:</b> Imagen clara.")
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: await update.message.reply_text("Por favor, envíame FOTO de ecuación.")
 
-# --- handle_photo MODIFICADO PARA USAR TaskContext Y ORQUESTADOR ---
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not (update.message and update.message.photo and update.effective_chat and update.effective_user):
         logger.warning("Mensaje de foto incompleto o sin información de chat/usuario.")
         return
-
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    message_id = update.message.message_id
+    chat_id = update.effective_chat.id; user_id = update.effective_user.id; message_id = update.message.message_id
     logger.info(f"--- handle_photo INVOCADO --- Chat ID: {chat_id}, User ID: {user_id}, Msg ID: {message_id}")
-    
     processing_message = await context.bot.send_message(chat_id=chat_id, text="📸 Creando contexto y procesando imagen...")
-
-    task_ctx = TaskContext(
-        chat_id=chat_id, user_id=user_id, message_id=message_id,
-        processing_message_id=processing_message.message_id
-    )
-
+    task_ctx = TaskContext(chat_id=chat_id, user_id=user_id, message_id=message_id, processing_message_id=processing_message.message_id)
     try:
-        photo_file = await update.message.photo[-1].get_file()
-        image_bytes_io = io.BytesIO()
-        await photo_file.download_to_memory(image_bytes_io)
-        task_ctx.image_bytes = image_bytes_io.getvalue()
-        task_ctx.image_filename = f"tg_{photo_file.file_id}"
+        photo_file = await update.message.photo[-1].get_file(); image_bytes_io = io.BytesIO(); await photo_file.download_to_memory(image_bytes_io)
+        task_ctx.image_bytes = image_bytes_io.getvalue(); task_ctx.image_filename = f"tg_{photo_file.file_id}"
         try:
-            pil_image = Image.open(io.BytesIO(task_ctx.image_bytes))
-            image_format = pil_image.format or "JPEG"
+            pil_image = Image.open(io.BytesIO(task_ctx.image_bytes)); image_format = pil_image.format or "JPEG"
             mime_type_map = {"JPEG": "image/jpeg", "PNG": "image/png", "GIF": "image/gif", "BMP": "image/bmp"}
             task_ctx.image_mime_type = mime_type_map.get(image_format.upper(), "image/jpeg")
             task_ctx.image_filename += f".{image_format.lower()}"
             logger.info(f"Context - Imagen recibida. Formato: {image_format}, MIME: {task_ctx.image_mime_type}")
-        except Exception as e_pil:
-            logger.error(f"Context - Error Pillow: {e_pil}. Usando image/jpeg por defecto.")
-            task_ctx.image_mime_type = "image/jpeg"; task_ctx.image_filename += ".jpg"
-
-        updated_task_ctx = await orchestrate_image_processing(task_ctx)
-        analysis_result = updated_task_ctx.equation_analysis_db
-
+        except Exception as e_pil: logger.error(f"Context - Error Pillow: {e_pil}. Usando image/jpeg por defecto."); task_ctx.image_mime_type = "image/jpeg"; task_ctx.image_filename += ".jpg"
+        updated_task_ctx = await orchestrate_image_processing(task_ctx); analysis_result = updated_task_ctx.equation_analysis_db
         if analysis_result and analysis_result.latex:
-            message_parts = ["✅ <b>¡Análisis Completado!</b>"]
+            message_parts = ["✅ <b>¡Análisis Completado!</b>"];
             if analysis_result.database_status == "Retrieved from DB": message_parts.append("<i>(Info de DB)</i>")
             def add_field(lbl, val, code=False):
                 if val and str(val).strip(): esc_val = html.escape(str(val).strip()); message_parts.append(f"\n<b>{html.escape(lbl)}:</b>{('<code>'+esc_val+'</code>') if code else (' '+esc_val)}")
@@ -306,7 +272,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             add_field("Derivación", analysis_result.derivation, True); add_field("Usos Comunes", analysis_result.uses)
             add_field("Variables", analysis_result.vars); add_field("Ecuaciones Similares", analysis_result.similars)
             message_parts.append(f"\n\n<tg-spoiler><i>Debug: LLM:{html.escape(analysis_result.llm_analysis_status)},DB:{html.escape(analysis_result.database_status)},ID:{analysis_result.equation_id}</i></tg-spoiler>")
-            final_text = "\n".join(message_parts)
+            final_text = "\n".join(message_parts);
             if len(final_text) > 4096: final_text = final_text[:4090] + "\n(...)"
             await context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=final_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             if analysis_result.latex and (img_buf := render_latex_to_image_bytes(analysis_result.latex, f"eq_{analysis_result.equation_id}.png")):
@@ -314,10 +280,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 except Exception as e_send_photo: logger.error(f"Error enviando img renderizada: {e_send_photo}", exc_info=True)
                 finally:
                     if img_buf: img_buf.close()
-        elif analysis_result and updated_task_ctx.error_message:
-             await context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=f"😕 No pude procesar. Error: {html.escape(updated_task_ctx.error_message)}")
-        elif analysis_result and not analysis_result.latex:
-             await context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=f"😕 No pude extraer LaTeX. Estado: {html.escape(analysis_result.llm_analysis_status)}")
+        elif analysis_result and updated_task_ctx.error_message: await context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=f"😕 No pude procesar. Error: {html.escape(updated_task_ctx.error_message)}")
+        elif analysis_result and not analysis_result.latex: await context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=f"😕 No pude extraer LaTeX. Estado: {html.escape(analysis_result.llm_analysis_status)}")
         else: await context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text="Error procesando imagen.")
     except Exception as e:
         logger.error(f"Error crítico en handle_photo: {e}", exc_info=True)
@@ -348,47 +312,112 @@ if TELEGRAM_BOT_TOKEN:
     except Exception as e:
         logger.error(f"Error crítico al inicializar app Telegram: {e}", exc_info=True); telegram_app = None
 
-# --- ELIMINADA LA FUNCIÓN run_telegram_polling personalizada ---
+# --- ESTA ES LA FUNCIÓN run_telegram_polling QUE DEBE USARSE CON EL LIFESPAN ---
+async def run_telegram_polling():
+    if not telegram_app or not hasattr(telegram_app, 'updater') or not telegram_app.updater:
+        logger.error("App Telegram o Updater no disponibles. No se inicia polling.")
+        return
+    logger.info("Iniciando tarea de polling de Telegram (run_telegram_polling)...")
+    try:
+        logger.info("Llamando a telegram_app.initialize().")
+        await telegram_app.initialize()
+        logger.info("telegram_app.initialize() completado.")
+        
+        try:
+            logger.info("Intentando limpiar updates pendientes ANTES de iniciar polling...")
+            await telegram_app.updater.bot.get_updates(offset=-1, timeout=1, limit=1)
+            logger.info("Limpieza de updates pendientes (intento) completada.")
+        except Exception as e_get_updates_clean:
+            logger.warning(f"Advertencia/Error durante limpieza de updates: {type(e_get_updates_clean).__name__} - {e_get_updates_clean}")
+
+        logger.info("Iniciando telegram_app.updater.start_polling()...")
+        await telegram_app.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES, drop_pending_updates=True
+        )
+        logger.info("Polling de Telegram iniciado y activo.")
+        
+        loop_count = 0
+        while telegram_app.updater and telegram_app.updater.running:
+            loop_count += 1
+            if loop_count % 30 == 0: 
+                logger.info(f"Polling task still alive. Updater running: {telegram_app.updater.running}. Loop count: {loop_count // 30} (minutos aprox)")
+            await asyncio.sleep(1)
+        
+        if not (telegram_app.updater and telegram_app.updater.running):
+            logger.warning("Saliendo del bucle de polling: updater.running es False o updater no existe.")
+        else:
+            logger.info("El bucle de polling ha terminado por otra razón (posiblemente shutdown).")
+
+    except (KeyboardInterrupt, SystemExit, asyncio.CancelledError) as user_cancel_err:
+        logger.info(f"Polling de Telegram interrumpido o cancelado: {type(user_cancel_err).__name__}")
+    except telegram.error.Conflict as conflict_err:
+        logger.error(f"ERROR DE CONFLICTO AL INICIAR/EJECUTAR POLLING: {conflict_err}.")
+    except telegram.error.InvalidToken as token_err:
+        logger.error(f"ERROR DE TOKEN INVÁLIDO AL INICIAR/EJECUTAR POLLING: {token_err}.")
+    except Exception as e:
+        logger.error(f"Error excepcional DENTRO de run_telegram_polling: {type(e).__name__} - {e}", exc_info=True)
+    finally:
+        logger.info("Bloque finally de run_telegram_polling alcanzado.")
+        if telegram_app and hasattr(telegram_app, 'updater') and telegram_app.updater.running:
+            logger.info("Intentando detener updater (finally de run_telegram_polling)...")
+            try:
+                await telegram_app.updater.bot.get_updates(offset=-1, timeout=0, limit=1) 
+                await telegram_app.updater.stop()
+                logger.info("Updater de polling detenido con éxito.")
+            except Exception as e_stop_updater:
+                logger.error(f"Error deteniendo updater en finally: {type(e_stop_updater).__name__} - {e_stop_updater}", exc_info=True)
+        
+        # Ya no es necesario llamar a telegram_app.shutdown() aquí, se hará en el lifespan
+        logger.info("Tarea de polling (run_telegram_polling) finalizada completamente (shutdown de app se hará en lifespan).")
 
 @asynccontextmanager
-async def lifespan(app_lifespan_instance: FastAPI): # Nombre del argumento es irrelevante
+async def lifespan(app_lifespan_instance: FastAPI):
     global polling_task
-    logger.info("FastAPI lifespan [STARTUP]: Iniciando.")
-    if TELEGRAM_BOT_TOKEN and telegram_app:
-        logger.info("Intentando iniciar telegram_app.run_polling() como tarea...")
-        try:
-            polling_task = asyncio.create_task(telegram_app.run_polling(
-                allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30,
-            ))
-            task_name = polling_task.get_name() if hasattr(polling_task, 'get_name') else "PollingTaskAppRunPolling"
-            logger.info(f"Tarea de polling (Application.run_polling) creada: {task_name}")
-            await asyncio.sleep(5) 
-            if polling_task.done():
-                logger.error(f"¡Tarea polling ({task_name}) finalizó/falló inmediatamente!")
-                try:
-                    exc = polling_task.exception()
-                    if exc: logger.error(f"Excepción de {task_name} inmediata: {type(exc).__name__} - {exc}", exc_info=True)
-                    else: logger.info(f"Tarea {task_name} finalizó sin excepción (raro).")
-                except asyncio.CancelledError: logger.info(f"Tarea {task_name} cancelada inmediatamente.")
-                except Exception as e_poll_check: logger.error(f"Error verificando {task_name}: {e_poll_check}", exc_info=True)
-            else: logger.info(f"Tarea polling ({task_name}) parece correr después de 5s.")
-        except Exception as e_lifespan_startup:
-            logger.error(f"Error en lifespan startup al iniciar Telegram: {e_lifespan_startup}", exc_info=True)
-    else: logger.warning("Token Telegram o app no configurados. No se inicia polling.")
+    logger.info("FastAPI lifespan [STARTUP]: Iniciando tareas de fondo...")
+    if telegram_app: # Solo si la app de telegram se configuró bien
+        logger.info("Creando tarea de polling de Telegram desde lifespan (llamando a run_telegram_polling)...")
+        polling_task = asyncio.create_task(run_telegram_polling())
+        task_name = polling_task.get_name() if hasattr(polling_task, 'get_name') else "PollingTaskCustom"
+        logger.info(f"Tarea de polling de Telegram creada: {task_name}")
+        await asyncio.sleep(3) 
+        if polling_task.done():
+            logger.warning(f"La tarea de polling ({task_name}) finalizó/falló inmediatamente después de crearla.")
+            try:
+                exc = polling_task.exception() 
+                if exc: logger.error(f"Excepción de {task_name} inmediata: {type(exc).__name__} - {exc}", exc_info=exc)
+                else: logger.info(f"Tarea {task_name} finalizó inmediatamente sin excepción (inesperado).")
+            except asyncio.CancelledError: logger.info(f"Tarea {task_name} fue cancelada inmediatamente.")
+            except asyncio.InvalidStateError: logger.info(f"Estado inválido al obtener excepción de {task_name} inmediata.")
+            except Exception as e_poll_check_startup: logger.error(f"Excepción verificando {task_name} en startup: {e_poll_check_startup}", exc_info=True)
+    else:
+        logger.warning("Aplicación Telegram no inicializada. No se iniciará la tarea de polling.")
+    
     yield 
-    logger.info("FastAPI lifespan [SHUTDOWN]: Deteniendo.")
+    
+    logger.info("FastAPI lifespan [SHUTDOWN]: Deteniendo tareas de fondo...")
     if polling_task and not polling_task.done():
-        task_name_s = polling_task.get_name() if hasattr(polling_task, 'get_name') else "PollingTaskAppRunPolling"
-        logger.info(f"Cancelando tarea polling ({task_name_s})...")
+        task_name_shutdown = polling_task.get_name() if hasattr(polling_task, 'get_name') else "PollingTaskCustom"
+        logger.info(f"Cancelando tarea de polling ({task_name_shutdown})...")
         polling_task.cancel()
         try: await polling_task
-        except asyncio.CancelledError: logger.info(f"Tarea polling ({task_name_s}) cancelada.")
-        except Exception as e_shut: logger.error(f"Excepción al esperar cancelación de {task_name_s}: {type(e_shut).__name__} - {e_shut}", exc_info=True)
+        except asyncio.CancelledError: logger.info(f"Tarea de polling ({task_name_shutdown}) cancelada exitosamente.")
+        except Exception as e_task_shutdown: logger.error(f"Error esperando cancelación/finalización de {task_name_shutdown}: {type(e_task_shutdown).__name__} - {e_task_shutdown}", exc_info=True)
+    elif polling_task and polling_task.done():
+        logger.info("La tarea de polling ya había finalizado (o fallado) antes del shutdown del lifespan.")
+        try:
+            exc = polling_task.exception();
+            if exc: logger.error(f"Excepción de la tarea de polling (revisión en shutdown): {type(exc).__name__} - {exc}", exc_info=exc)
+        except (asyncio.CancelledError, asyncio.InvalidStateError): pass 
+        except Exception: pass 
+    
     if telegram_app and hasattr(telegram_app, 'shutdown') and callable(telegram_app.shutdown):
-        logger.info("Llamando a telegram_app.shutdown() explícito.")
-        try: await telegram_app.shutdown(); logger.info("telegram_app.shutdown() completado.")
-        except Exception as e_exp_shut: logger.error(f"Error en shutdown explícito de telegram_app: {e_exp_shut}", exc_info=True)
-    logger.info("Lifespan de FastAPI finalizado.")
+        logger.info("Llamando a telegram_app.shutdown() explícito en el shutdown del lifespan.")
+        try:
+            await telegram_app.shutdown()
+            logger.info("telegram_app.shutdown() completado.")
+        except Exception as e_explicit_shutdown:
+            logger.error(f"Error en el shutdown explícito de telegram_app: {e_explicit_shutdown}", exc_info=True)
+    logger.info("Lifespan de FastAPI y limpieza de tareas de fondo finalizado.")
 
 app.router.lifespan_context = lifespan
 
