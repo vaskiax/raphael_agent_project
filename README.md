@@ -104,9 +104,9 @@ El sistema Raphael consta de dos módulos principales:
 *   **`/help`**: Muestra ayuda.
 *   **Enviar una foto de una ecuación**: El bot la analizará y responderá con detalles y una imagen renderizada del LaTeX.
 
-## Contribuir
+## bot ejemplo
 
-------
+@low_raphael_bot
 
 ## Licencia
 
