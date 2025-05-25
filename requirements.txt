@@ -1,10 +1,10 @@
 fastapi
-uvicorn[standard]
-gunicorn
-python-telegram-bot>=20.0,<21.0
-pymongo
+uvicorn[standard] 
+python-telegram-bot>=20.0
 python-dotenv
-matplotlib
-Pillow
 httpx
+pymongo
+Pillow
+matplotlib
 sympy
+pydantic
