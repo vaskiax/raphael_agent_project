@@ -1,7 +1,0 @@
-venv/
-.env
-raphael_setup.sh
-deploy_raphael_app_service.sh
-.gitignore
-.dockerignore
-__pycache__/
