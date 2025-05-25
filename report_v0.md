@@ -33,7 +33,6 @@ Desarrollar un agente de IA robusto, modular y extensible llamado "Raphael" capa
 ### 3. Arquitectura y Componentes del Sistema
 
 **3.1. Diagrama de Arquitectura General:**
-*(Idealmente, aquí se insertaría o referenciaría un diagrama visual. Para un LLM, se describe textualmente):*
 El sistema sigue una arquitectura de microservicios/módulos. El usuario interactúa con el **Bot de Telegram**. Los mensajes del bot son recibidos por **Raphael-Core** a través de un endpoint de Webhook. Raphael-Core procesa la solicitud:
     *   Si es una imagen de una ecuación, invoca al módulo **Rapheye** (Azure Function) mediante una llamada API HTTP.
     *   Rapheye analiza la imagen usando un LLM multimodal y devuelve un JSON con el análisis.
@@ -41,6 +40,7 @@ El sistema sigue una arquitectura de microservicios/módulos. El usuario interac
     *   Finalmente, Raphael-Core formatea la respuesta y la envía de vuelta al usuario vía Telegram.
 
 **3.2. Módulo de Visión "Rapheye"**
+
     *   **Propósito:** Análisis de imágenes de ecuaciones.
     *   **Tecnología:** Azure Function (Python v2).
     *   **Motor IA:** LLM Multimodal (ej. Google Gemini Pro/Flash).
@@ -50,6 +50,7 @@ El sistema sigue una arquitectura de microservicios/módulos. El usuario interac
     *   **URL Ejemplo:** `https://<rapheye-app-name>.azurewebsites.net/api/analyze_equation_from_image?code=<FUNCTION_KEY>`
 
 **3.3. Módulo Principal "Raphael-Core"**
+
     *   **Propósito:** Orquestador principal, interfaz con Telegram, lógica de negocio, persistencia.
     *   **Tecnología Primaria:** Python, FastAPI, Uvicorn.
     *   **Interacción con Telegram:** Biblioteca `python-telegram-bot` (versión >= 20.x), configurada en modo **Webhook**.
@@ -68,6 +69,7 @@ El sistema sigue una arquitectura de microservicios/módulos. El usuario interac
     *   **Estado Actual:** Funcional en entorno de desarrollo local (`python main.py` con Uvicorn y `ngrok` para webhooks). Despliegue en Azure App Service para Contenedores en progreso y funcionando con la versión 0.10.1.
 
 **3.4. Base de Datos (Azure Cosmos DB)**
+
     *   **API:** MongoDB.
     *   **Colección Principal:** `equations` (o según variable de entorno).
     *   **Estructura del Documento (Ejemplo):** Basada en el modelo `EquationAnalysis` de Pydantic, incluyendo `equation_id` (como `_id`), `latex`, `name`, `category`, `description`, `derivation`, `uses`, `vars`, `similars`, `llm_analysis_status`, `database_status`, y `normalized_latex_key`.
@@ -75,6 +77,7 @@ El sistema sigue una arquitectura de microservicios/módulos. El usuario interac
 ### 4. Estado del Desarrollo y Despliegue
 
 **4.1. Funcionalidad Implementada:**
+
 *   Recepción de imágenes de ecuaciones vía Telegram.
 *   Llamada exitosa a la Azure Function "Rapheye" para análisis de imagen.
 *   Procesamiento de la respuesta JSON de Rapheye.
