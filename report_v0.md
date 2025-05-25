@@ -30,49 +30,23 @@ Desarrollar un agente de IA robusto, modular y extensible llamado "Raphael" capa
 *   **Optimización y Escalabilidad:** Mejorar el rendimiento, la eficiencia de costos y la capacidad de escalado de todos los componentes del sistema.
 *   **Seguridad y Robustez:** Fortalecer la seguridad de las APIs, la gestión de datos y la resiliencia general del sistema.
 
-### 3. Arquitectura y Componentes del Sistema
+**3. Arquitectura y Componentes del Sistema**
 
-**3.1. Diagrama de Arquitectura General:**
+### 3.1. Diagrama de Arquitectura General
+
 El sistema sigue una arquitectura de microservicios/módulos. El usuario interactúa con el **Bot de Telegram**. Los mensajes del bot son recibidos por **Raphael-Core** a través de un endpoint de Webhook. Raphael-Core procesa la solicitud:
-    *   Si es una imagen de una ecuación, invoca al módulo **Rapheye** (Azure Function) mediante una llamada API HTTP.
-    *   Rapheye analiza la imagen usando un LLM multimodal y devuelve un JSON con el análisis.
-    *   Raphael-Core puede consultar/almacenar este análisis en **Azure Cosmos DB**.
-    *   Finalmente, Raphael-Core formatea la respuesta y la envía de vuelta al usuario vía Telegram.
 
-**3.2. Módulo de Visión "Rapheye"**
+* Si es una imagen de una ecuación, invoca al módulo **Rapheye** (Azure Function) mediante una llamada API HTTP.
+* Rapheye analiza la imagen usando un LLM multimodal y devuelve un JSON con el análisis.
+* Raphael-Core puede consultar/almacenar este análisis en **Azure Cosmos DB**.
+* Finalmente, Raphael-Core formatea la respuesta y la envía de vuelta al usuario vía Telegram.
 
-    *   **Propósito:** Análisis de imágenes de ecuaciones.
-    *   **Tecnología:** Azure Function (Python v2).
-    *   **Motor IA:** LLM Multimodal (ej. Google Gemini Pro/Flash).
-    *   **Entrada (API):** Petición POST HTTP con bytes de imagen (ej. `image/jpeg`).
-    *   **Salida (API):** JSON estructurado en español con: `latex_extracted_from_image`, `name`, `category`, `description`, `derivation`, `uses`, `vars`, `similars`.
-    *   **Estado Actual:** Funcional y desplegado en Azure Functions. Se dispone de una URL de invocación válida con su respectiva clave de función.
-    *   **URL Ejemplo:** `https://<rapheye-app-name>.azurewebsites.net/api/analyze_equation_from_image?code=<FUNCTION_KEY>`
+### 3.2. Módulo de Visión "Rapheye"
 
-**3.3. Módulo Principal "Raphael-Core"**
-
-    *   **Propósito:** Orquestador principal, interfaz con Telegram, lógica de negocio, persistencia.
-    *   **Tecnología Primaria:** Python, FastAPI, Uvicorn.
-    *   **Interacción con Telegram:** Biblioteca `python-telegram-bot` (versión >= 20.x), configurada en modo **Webhook**.
-        *   Un endpoint HTTP en FastAPI (`/{TOKEN_ID}_{WEBHOOK_SECRET_PATH_SUFFIX}`) recibe los `Update`s de Telegram.
-    *   **Comunicación con Rapheye:** Cliente HTTP asíncrono `httpx` para llamadas API.
-    *   **Base de Datos:** Azure Cosmos DB (API MongoDB) a través de `pymongo`.
-        *   Almacena análisis de ecuaciones para reutilización.
-        *   Clave principal para búsqueda: LaTeX normalizado.
-    *   **Estructura Interna Clave:**
-        *   **`TaskContext` (Pydantic Model):** Encapsula todos los datos relevantes para el procesamiento de una solicitud de imagen (IDs de chat/usuario/mensaje, imagen, análisis de Rapheye, resultado de la DB, etc.).
-        *   **`orchestrate_image_processing(TaskContext)`:** Función principal que coordina la lógica de análisis de imágenes: llamada a Rapheye, consulta/escritura en DB, preparación de la respuesta.
-        *   **Handlers de Telegram:** Funciones asíncronas para `CommandHandler` (ej. `/start`, `/help`) y `MessageHandler` (ej. para `filters.PHOTO`, `filters.TEXT`).
-        *   **`lifespan` de FastAPI:**
-            *   **Startup:** Inicializa la conexión a CosmosDB, configura la instancia de `Application` de `python-telegram-bot` (crea el objeto, añade handlers), y registra el webhook con la API de Telegram (`setWebhook`).
-            *   **Shutdown:** Elimina el webhook de Telegram (`deleteWebhook`), cierra la instancia de `Application` de PTB (`ptb_application.shutdown()`), y cierra la conexión a CosmosDB.
-    *   **Estado Actual:** Funcional en entorno de desarrollo local (`python main.py` con Uvicorn y `ngrok` para webhooks). Despliegue en Azure App Service para Contenedores en progreso y funcionando con la versión 0.10.1.
-
-**3.4. Base de Datos (Azure Cosmos DB)**
-
-    *   **API:** MongoDB.
-    *   **Colección Principal:** `equations` (o según variable de entorno).
-    *   **Estructura del Documento (Ejemplo):** Basada en el modelo `EquationAnalysis` de Pydantic, incluyendo `equation_id` (como `_id`), `latex`, `name`, `category`, `description`, `derivation`, `uses`, `vars`, `similars`, `llm_analysis_status`, `database_status`, y `normalized_latex_key`.
+* **Propósito:** Análisis de imágenes de ecuaciones.
+* **Tecnología:** Azure Function (Python v2).
+* **Motor IA:** LLM Multimodal (ej. Google Gemini Pro/Flash).
+* **Entrada (API):** Petición POST HTTP con bytes
 
 ### 4. Estado del Desarrollo y Despliegue
 
