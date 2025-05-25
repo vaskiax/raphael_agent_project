@@ -106,7 +106,7 @@ El sistema Raphael consta de dos módulos principales:
 
 ## bot ejemplo
 
-@low_raphael_bot
+t.me/low_raphael_bot
 
 ## Licencia
 
