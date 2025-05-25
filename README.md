@@ -19,9 +19,6 @@ El sistema Raphael consta de dos módulos principales:
     *   Persiste y consulta análisis en Azure Cosmos DB (API MongoDB).
     *   Renderiza LaTeX a imágenes usando Matplotlib.
 
-![Diagrama de Arquitectura (Placeholder)](./path_a_tu_diagrama_si_lo_tienes.png)
-*(Reemplaza la línea anterior con un diagrama de tu arquitectura si lo tienes)*
-
 ## Tecnologías Utilizadas
 
 *   **Backend:** Python, FastAPI, Uvicorn
@@ -106,7 +103,7 @@ El sistema Raphael consta de dos módulos principales:
 
 ## bot ejemplo
 
-t.me/low_raphael_bot
+[Raphael Bot](https://t.me/low_raphael_bot)
 
 ## Licencia
 
